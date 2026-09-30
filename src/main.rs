@@ -1,83 +1,68 @@
 #![no_std]
 #![no_main]
 
+mod tasks {
+    pub mod smth_task;
+    pub mod display_task;
+}
+
+use crate::tasks::display_task::update_display;
+use crate::tasks::smth_task::{blink_led, button_check};
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::Config;
-use embassy_time::Timer;
+use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::gpio::{Level, Output, Pull, Speed};
+use embassy_stm32::i2c::I2c;
+use embassy_stm32::peripherals::I2C1;
+use embassy_stm32::time::Hertz;
+use embassy_stm32::{bind_interrupts, i2c, Config};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::signal::Signal;
+use ssd1306::rotation::DisplayRotation::Rotate0;
+use ssd1306::size::DisplaySize128x64;
+use ssd1306::Ssd1306Async;
 use {defmt_rtt as _, panic_probe as _};
 
+static BLINK_CHANGE_SIGNAL: Signal<ThreadModeRawMutex, u64> = Signal::new();
+static LED_TOGGLE_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
+static BUTTON_LONG_PRESS_BLINK_SIGNAL: Signal<ThreadModeRawMutex, ()> = Signal::new();
+
+static MIN_SPEED: u64 = 500;
+static MAX_SPEED: u64 = 1000;
+static STEP: u64 = 500;
+
+
+
+// Bind the I2C interrupt vector for asynchronous operation
+bind_interrupts!(struct Irqs {
+    I2C1_EV => i2c::EventInterruptHandler<I2C1>;
+    I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
+});
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Config::default());
-    let mut led = Output::new(p.PC13, Level::High, Speed::Low);
 
-    loop {
-        led.toggle();
-        Timer::after_millis(1u64).await;
-    }
-}
+    let button = ExtiInput::new(p.PA0, p.EXTI0, Pull::Up);
+    defmt::unwrap!(spawner.spawn(button_check(button)));
 
-// #[entry]
-// fn main() -> ! {
-//     // Safety Delay for USB flashing bootloader
-//     cortex_m::asm::delay(2_000_000);
-//
-//
-//     let dp = Peripherals::take().unwrap();
-//     let mut rcc = dp.RCC.freeze(Config::default());
-//
-//     // Split peripheral blocks
-//     let gpioa = dp.GPIOA.split(&mut rcc);
-//     let gpioc = dp.GPIOC.split(&mut rcc);
-//
-//     // Configure the onboard LED and the KEY button (PA0)
-//     let mut led = gpioc.pc13.into_push_pull_output();
-//     let button = gpioa.pa0.into_pull_up_input();
-//
-//     // Set up a hardware timer for the debounce delay step
-//     let mut delay = dp.TIM1.delay_ms(&mut rcc);
-//
-//     // State variable to track if the button was previously registered as pressed
-//     let mut button_was_pressed = false;
-//
-//     let mut state = State {
-//         speed: 200,
-//         min: 200,
-//         max: 1000,
-//     };
-//
-//
-//     loop {
-//         if button.is_low() {
-//             if !button_was_pressed {
-//                 state.next();
-//                 button_was_pressed = true;
-//
-//                 delay.delay_ms(50u32);
-//             }
-//         } else {
-//             button_was_pressed = false;
-//         }
-//         delay.delay_ms(state.speed);
-//         led.toggle();
-//     }
-// }
+    let led = Output::new(p.PC13, Level::High, Speed::Low);
+    defmt::unwrap!(spawner.spawn(blink_led(led)));
 
-struct State {
-    speed: u32,
-    min: u32,
-    max: u32,
-}
+    let i2c_config = i2c::Config::default();
+    let i2c = I2c::new(
+        p.I2C1,
+        p.PB8,
+        p.PB9,
+        Irqs,
+        p.DMA1_CH6,
+        p.DMA1_CH5,
+        Hertz(400_000),
+        i2c_config,
+    );
 
-impl State {
-    fn next(&mut self) {
-        let (new_speed, overflow) = self.speed.overflowing_add(200);
-        if overflow || (new_speed > self.max) {
-            self.speed = self.min;
-        } else {
-            self.speed = new_speed;
-        }
-    }
+    let interface = ssd1306::I2CDisplayInterface::new(i2c);
+    let display_base = Ssd1306Async::new(interface, DisplaySize128x64, Rotate0);
+
+    let display = display_base.into_buffered_graphics_mode();
+    defmt::unwrap!(spawner.spawn(update_display(display)));
 }

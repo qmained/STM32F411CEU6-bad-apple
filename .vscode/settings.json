@@ -1,5 +1,0 @@
-// Weird hack needed for rust-analyzer not to complain about #![no_std]
-{
-    "rust-analyzer.cargo.target": "thumbv7em-none-eabihf",
-    "rust-analyzer.checkOnSave": false,
-}
