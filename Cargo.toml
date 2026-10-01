@@ -6,6 +6,9 @@ edition = "2021"
 name = "blackpill"
 version = "0.1.0"
 
+[profile.dev]
+opt-level = "s"
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
@@ -23,12 +26,10 @@ arrayvec = { version = "0.7", default-features = false }
 
 ssd1306 = { version = "0.10" , features = ["async", "graphics"]}
 embedded-graphics = "0.8"
-embedded-gui = { version = "0.2.7",default-features = false, features = ["embedded-graphics", "micromath", "embassy"]}
 
-
-embassy-stm32 = { version = "0.2", features = ["defmt", "stm32f411re", "unstable-pac", "memory-x", "time-driver-any", "exti", "chrono"] }
-embassy-sync = { version = "0.7.0", features = ["defmt"] }
-embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-time = { version = "0.4.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32f411re", "unstable-pac", "memory-x", "time-driver-any", "exti", "chrono"] }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-futures = {version = "0.1", features = ["defmt"]}
 

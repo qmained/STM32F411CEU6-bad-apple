@@ -1,4 +1,3 @@
-
 use crate::{
     BLINK_CHANGE_SIGNAL, BUTTON_LONG_PRESS_BLINK_SIGNAL, LED_TOGGLE_SIGNAL, MAX_SPEED, MIN_SPEED,
     STEP,
@@ -36,7 +35,7 @@ pub async fn blink_led(mut led: Output<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-pub async fn button_check(mut button: ExtiInput<'static>) -> ! {
+pub async fn button_check(mut button: ExtiInput<'static, embassy_stm32::mode::Async>) -> ! {
     let mut current_speed = MIN_SPEED;
     let mut led_enabled = true;
 
@@ -68,7 +67,7 @@ trait ExtiButtonExt {
     async fn wait_for_press(&mut self) -> ButtonEvent;
 }
 
-impl ExtiButtonExt for ExtiInput<'static> {
+impl ExtiButtonExt for ExtiInput<'static, embassy_stm32::mode::Async> {
     async fn wait_for_press(&mut self) -> ButtonEvent {
         self.wait_for_low().await;
 
