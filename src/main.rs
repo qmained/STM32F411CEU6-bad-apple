@@ -1,47 +1,38 @@
 #![no_std]
 #![no_main]
 
-mod gui;
-mod tasks;
-mod java_logo;
-
-use crate::tasks::display_task::{number_counter_task, update_display, NUMBER_TIM_SIGNAL};
-use crate::tasks::smth_task::{blink_led, button_check};
-use core::mem::forget;
-use defmt::export::display;
 use embassy_executor::Spawner;
-use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::i2c::I2c;
+use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::interrupt::typelevel::EXTI0;
+use embassy_stm32::mode::Async;
 use embassy_stm32::peripherals::{DMA1_CH5, DMA1_CH6, I2C1};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::low_level::{RoundTo, Timer};
-use embassy_stm32::{bind_interrupts, dma, exti, i2c, interrupt, pac, Config};
-use embassy_stm32::interrupt::{InterruptExt, Priority};
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
+use embassy_stm32::{bind_interrupts, dma, exti, i2c, Config};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embedded_graphics::draw_target::DrawTarget;
-use embedded_graphics::Drawable;
-use embedded_graphics::geometry::Point;
+use embassy_time::{Duration, Instant};
 use embedded_graphics::image::{Image, ImageRaw};
 use embedded_graphics::pixelcolor::BinaryColor;
-use ssd1306::mode::DisplayConfigAsync;
+use embedded_graphics::prelude::Point;
+use embedded_graphics::Drawable;
+use heatshrink::decoder::HeatshrinkDecoder;
+use heatshrink::{Poll, SinkError};
+use ssd1306::mode::{BufferedGraphicsModeAsync, DisplayConfigAsync};
+use ssd1306::prelude::I2CInterface;
 use ssd1306::rotation::DisplayRotation::Rotate0;
 use ssd1306::size::DisplaySize128x64;
 use ssd1306::Ssd1306Async;
 use {defmt_rtt as _, panic_probe as _};
-use crate::java_logo::{JAVA_LOGO_128X64, LAIN_128X64, SYSTEMD_128X64};
 
-static BLINK_CHANGE_SIGNAL: Signal<ThreadModeRawMutex, u64> = Signal::new();
-static LED_TOGGLE_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
-static BUTTON_LONG_PRESS_BLINK_SIGNAL: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub type SsdDisplay = Ssd1306Async<
+    I2CInterface<I2c<'static, Async, Master>>,
+    DisplaySize128x64,
+    BufferedGraphicsModeAsync<DisplaySize128x64>,
+>;
+
+static VIDEO_DATA: &[u8] = include_bytes!("../output.bin");
 
 pub static TIM_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-static MIN_SPEED: u64 = 500;
-static MAX_SPEED: u64 = 1000;
-static STEP: u64 = 500;
 
 bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
@@ -52,39 +43,35 @@ bind_interrupts!(struct Irqs {
     EXTI0 => exti::InterruptHandler<EXTI0>;
 });
 
-#[interrupt]
-unsafe fn TIM2() {
-    let reqs = pac::TIM2;
-
-    if reqs.sr().read().uif() {
-        reqs.sr().modify(|w| w.set_uif(false));
-        // TIM_SIGNAL.signal(());
-        NUMBER_TIM_SIGNAL.signal(());
-    }
-}
-
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    let p = embassy_stm32::init(Config::default());
+async fn main(_spawner: Spawner) {
+    let mut config = Config::default();
 
-    let timer = Timer::new(p.TIM2);
-    timer.set_frequency(Hertz::hz(1), RoundTo::Faster);
-    timer.enable_update_interrupt(true);
-    timer.clear_update_interrupt();
+    {
+        use embassy_stm32::rcc::*;
+        use embassy_stm32::time::Hertz;
 
-    unsafe {
-        pac::TIM2.dier().modify(|w| w.set_uie(true));
-        interrupt::TIM2.set_priority(Priority::P1);
-        interrupt::TIM2.enable();
+        config.rcc.hse = Some(Hse {
+            freq: Hertz(25_000_000),
+            mode: HseMode::Oscillator,
+        });
+        config.rcc.pll_src = PllSource::HSE;
+
+        config.rcc.pll = Some(Pll {
+            prediv: PllPreDiv::DIV25,
+            mul: PllMul::MUL200,
+            divp: Some(PllPDiv::DIV2),
+            divq: Some(PllQDiv::DIV4),
+            divr: None,
+        });
+
+        config.rcc.sys = Sysclk::PLL1_P;
+        config.rcc.ahb_pre = AHBPrescaler::DIV1;
+        config.rcc.apb1_pre = APBPrescaler::DIV2;
+        config.rcc.apb2_pre = APBPrescaler::DIV1;
     }
 
-    timer.start();
-    forget(timer);
-
-    let button = ExtiInput::new(p.PA0, p.EXTI0, Pull::Up, Irqs);
-    spawner.spawn(button_check(button).unwrap());
-    let led = Output::new(p.PC13, Level::High, Speed::Low);
-    spawner.spawn(blink_led(led).unwrap());
+    let p = embassy_stm32::init(config);
 
     let mut i2c_config = i2c::Config::default();
     i2c_config.frequency = Hertz(400_000);
@@ -96,16 +83,83 @@ async fn main(spawner: Spawner) {
     let display_base = Ssd1306Async::new(interface, DisplaySize128x64, Rotate0);
 
     let mut display = display_base.into_buffered_graphics_mode();
-    let image_raw: ImageRaw<BinaryColor> = ImageRaw::new(&LAIN_128X64, 128);
     display.init().await.unwrap();
 
-    display.clear(BinaryColor::Off).unwrap();
-    Image::new(&image_raw, Point::zero())
-        .draw(&mut display)
-        .unwrap();
+    loop {
+        let mut decoder: HeatshrinkDecoder<10, 4, 128, 1024> = HeatshrinkDecoder::new();
 
+        let mut output_buffer = [0u8; 1024];
+        let mut buffer_size = 0;
+
+        let mut flash_index = 0;
+        let start_time = Instant::now();
+        let mut frame_count = 0;
+        let frame_duration = Duration::from_micros(106829);
+
+        while flash_index < VIDEO_DATA.len() {
+            match decoder.sink(&VIDEO_DATA[flash_index..]) {
+                Ok(n) => flash_index += n,
+                Err(SinkError::Full) => {}
+                Err(SinkError::Misuse) => panic!("Misuse"),
+            }
+
+            loop {
+                let mut free_space = &mut output_buffer[buffer_size..];
+
+                match decoder.poll(&mut free_space) {
+                    Ok(Poll::More(n)) => {
+                        buffer_size += n;
+
+                        if buffer_size == 1024 {
+                            draw_to_display(
+                                &output_buffer,
+                                &mut display,
+                                start_time,
+                                &mut frame_count,
+                                frame_duration,
+                            )
+                            .await;
+                            buffer_size = 0;
+                        }
+                        continue;
+                    }
+                    Ok(Poll::Empty(n)) => {
+                        buffer_size += n;
+
+                        if buffer_size == 1024 {
+                            draw_to_display(
+                                &output_buffer,
+                                &mut display,
+                                start_time,
+                                &mut frame_count,
+                                frame_duration,
+                            )
+                            .await;
+                            buffer_size = 0;
+                        }
+                        break;
+                    }
+                    Err(e) => panic!("Err: {e:?}"),
+                }
+            }
+        }
+
+        embassy_time::Timer::after_secs(2).await;
+    }
+}
+
+async fn draw_to_display(
+    buf: &[u8],
+    display: &mut SsdDisplay,
+    start_time: Instant,
+    frame_count: &mut u64,
+    frame_duration: Duration,
+) {
+    let next_frame = start_time + (frame_duration * (*frame_count) as u32);
+    *frame_count += 1;
+    let raw = ImageRaw::<BinaryColor>::new(buf, 128);
+    Image::new(&raw, Point::zero()).draw(display).unwrap();
     display.flush().await.unwrap();
 
-    // spawner.spawn(update_display(display).unwrap());
-    // spawner.spawn(number_counter_task().unwrap());
+    embassy_time::Timer::at(next_frame).await;
 }

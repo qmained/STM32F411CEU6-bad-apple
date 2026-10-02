@@ -1,4 +1,4 @@
-cargo-features = ["panic-immediate-abort"]
+#cargo-features = ["panic-immediate-abort"]
 
 [package]
 authors = ["ex-exist <qmained@gmail.com>"]
@@ -13,7 +13,7 @@ opt-level = "s"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-panic = "immediate-abort"
+panic = "abort"
 strip = true
 
 [dependencies]
@@ -22,7 +22,7 @@ cortex-m-rt = "0.7.0"
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-arrayvec = { version = "0.7", default-features = false }
+heatshrink-lib = "1.0.0"
 
 ssd1306 = { version = "0.10" , features = ["async", "graphics"]}
 embedded-graphics = "0.8"
@@ -31,5 +31,4 @@ embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32f411re", "unstab
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-futures = {version = "0.1", features = ["defmt"]}
 
